@@ -234,68 +234,164 @@
 ## OJ 主要功能说明和截图
 ### POST /jobs
 * 提交代码以创建一个新的评测任务。
-* 请求:
-
-* 响应：
-
+* 请求:  
+![](pics/request2_1.png)
+* 响应：  
+![](pics/response2_1.png)
 ### GET /jobs
 * 根据 URL 参数查询和筛选评测任务。返回的结果按照任务创建时间升序排序。
-* 请求:
-
-* 响应：
+* 请求:  
+![](pics/request2_2.png)
+* 响应：  
+![](pics/response2_2.png)
 
 ### GET /jobs/{jobId}
 * 获取单个评测任务信息。
-* 请求:
-
-* 响应：
-
+* 请求:  
+![](pics/request2_3.png)
+* 响应：  
+![](pics/response2_3.png)
 ### PUT /jobs/{jobId}
 * 重新评测单个评测任务。
-* 请求:
-
-* 响应：
+* 请求:  
+![](pics/request2_4.png)
+* 响应：  
+![](pics/response2_4.png)
 
 ### POST /users
 * 创建新用户或更新已有用户。
-* 请求:
-
-* 响应：
+* 请求:  
+![](pics/request2_5.png)
+* 响应：  
+![](pics/response2_5.png)
 
 ### GET /users
 * 获取用户列表。
-* 请求:
-
-* 响应：
+* 请求:  
+![](pics/request2_6.png)
+* 响应：  
+![](pics/response2_6.png)
 
 ### POST /contests
 * 创建新比赛或更新比赛内容。
-* 请求:
-
-* 响应：
+* 请求:  
+![](pics/request2_7.png)
+* 响应：  
+![](pics/response2_7.png)
 
 ### GET /contests
 * 获取比赛列表。
-* 请求:
-
-* 响应：
+* 请求:  
+![](pics/request2_8.png)
+* 响应：  
+![](pics/response2_8.png)
 
 ### GET /contests/{contestId}
 * 获取单个比赛信息。
-* 请求:
-
-* 响应：
+* 请求:  
+![](pics/request2_9.png)
+* 响应：  
+![](pics/response2_9.png)
 
 ### GET /contests/{contestId}/ranklist
 * 获取单个比赛的排行榜。
-* 请求:
-
-* 响应：
+* 请求:  
+![](pics/request2_10.png)
+* 响应：  
+![](pics/response2_10.png)
 
 ## 提高要求的实现方式
+
+### 多比赛支持
+* 实现 /contests 开头的其余 API，支持新建或更新比赛，获取比赛信息和获取比赛排行榜。
+* 比赛 ID 为 0 时特殊处理，认为比赛 0 包括所有用户和所有题目，用户和题目都按 id 升序，没有开始和结束时间，没有提交次数限制，比赛 0 的配置不可修改。
+* 比赛 ID 不为 0 时为正常的比赛，需要通过 API 新建或更新。
+  
+### 持久化存储
+选择 `SQLite` 作为数据库后端，表结构如下：
+* users:
+    ```rust
+    "CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL
+    )"
+    ```
+* contests:
+    ```rust
+    // problem_ids and user_ids need vec to test
+    // when read, we need vec to test
+    "CREATE TABLE IF NOT EXISTS contests (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        'from' TEXT NOT NULL,
+        'to' TEXT NOT NULL,
+        problem_ids TEXT NOT NULL,
+        user_ids TEXT NOT NULL,
+        submission_limit INTEGER NOT NULL
+    )"
+    ```
+
+* jobs:
+    ```rust
+    // case need vec to test
+    // when read, we need vec to test
+    // sunmission divide into 5 parts
+    "CREATE TABLE IF NOT EXISTS jobs (
+        id INTEGER PRIMARY KEY,
+        created_time TEXT NOT NULL,
+        updated_time TEXT NOT NULL,
+        source_code TEXT NOT NULL,
+        language TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        contest_id INTEGER NOT NULL,
+        problem_id INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        result TEXT NOT NULL,
+        score REAL NOT NULL,
+        cases TEXT NOT NULL
+    )"
+    ```
+* `job.rs` 中新增如下函数：
+    ```rust
+    fn format_cases(v: &Vec<Case>) -> String 
+    fn parse_cases(s: String) -> Vec<Case>
+    pub fn query_jobs(conn: &Connection) -> Result<Vec<JobContent>>
+    pub fn query_job(conn: &Connection, id: usize) -> Result<JobContent>
+    fn insert_job(conn: &Connection, job: &JobContent) -> Result<()> 
+    fn update_job(conn: &Connection, job: &JobContent) -> Result<()> 
+    ```
+* `contest.rs` 和 `user.rs` 同样增加对应的函数提高代码复用性。 
+
+### 非阻塞评测
+* 将评测与 API 请求处理分离，即创建任务的请求应该立刻返回（返回 Queueing 状态），使用额外的线程运行评测，所有评测任务相关函数均改为异步函数，以下为主要函数：
+    ```rust
+    async fn compilate(&mut self, language: &Language, source_code: &String) -> bool
+    async fn judge(&self, case: &config::Case, ty: &String) -> String 
+    async fn judge_job(
+        job_id: usize,
+        pool: web::Data<Pool<SqliteConnectionManager>>,
+        problems: Vec<Problem>,
+        languages: Vec<Language>
+    ) 
+    ```
+* POST /jobs 响应：
+![](pics/response3_1.png)
+
+* GET /jobs/0 响应：
+![](pics/response3_2.png)
+
+### 打包测试
+* 支持将测试点分为若干个组（每一组称为一个子任务，子任务的集合构成对测试点集合的一个划分，且子任务内测试点编号连续），每一组必须所有测试点均正确才能获得所有分数，否则该组整体不得分。
+* 在 `post_jobs` 和 `put_jobs` 函数中新增判断是否为打包测试环节
+* 响应：
+![](pics/response3_3.png)
+
+### Special Judge
+* 而是通过外部程序将用户程序输出与标准答案进行对比，并给出得分。此选项即对应题目配置的 type 为 spj。
+* 更改 `Tempdir` 中 `compare_out_ans` 函数，当类型为 `spj` 时，在命令行中运行对应指令比对。
 
 
 ## 完成此作业感想
 * 助教提供的作业要求很全面，基本照着文档写没有什么大问题。
-* 最后验收是否发现自己还是有很多地方没有考虑到，需要改进。
+* 最后验收是否发现自己还是有很多地方没有考虑到，需要改进。特别是测例自己用的太少了，有些很简单的测例自己没用，结果验收时程序数组越界导致 bug。
 * rust 有很多库很方便，自己造轮子 bug 特别多，效果还不如直接调库。
